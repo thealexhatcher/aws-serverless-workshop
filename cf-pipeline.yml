@@ -9,7 +9,6 @@ Parameters:
   RepoName:
     Description: "Repo Name"
     Type: String
-
 Resources:
   CodeBuildProject:
     Type: AWS::CodeBuild::Project

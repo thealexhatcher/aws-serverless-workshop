@@ -1,0 +1,216 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  ServiceName:
+    Description: Name for the service, used in the code repository, Lambda function, and pipeline names
+    Type: String
+  BucketName:
+    Description: "Bucket Name"
+    Type: String
+  RepoName:
+    Description: "Repo Name"
+    Type: String
+
+Resources:
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ServiceName}_BUILD'
+      Description: Build project for the Lambda service
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment: 
+          Type: LINUX_CONTAINER
+          ComputeType: BUILD_GENERAL1_SMALL
+          Image: aws/codebuild/nodejs:6.3.1
+          EnvironmentVariables:
+            - Name: BUILD_OUTPUT_BUCKET
+              Value: !Ref BucketName
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source: 
+          Type: CODEPIPELINE
+        
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+        ArtifactStore: 
+            Location: !Ref BucketName
+            Type: S3
+        Name: !Sub '${ServiceName}_PIPE'
+        RoleArn: !GetAtt PipelineExecutionRole.Arn
+        Stages:
+            - Name: Source
+              Actions:
+                - Name: CodeCommitRepo
+                  ActionTypeId:
+                    Category: Source
+                    Owner: AWS
+                    Provider: CodeCommit
+                    Version: 1
+                  Configuration:
+                    PollForSourceChanges: true
+                    RepositoryName: !Sub '${RepoName}'
+                    BranchName: master
+                  OutputArtifacts:
+                    - Name: SourceZip
+            - Name: Build
+              Actions:
+                - Name: CodeBuild
+                  ActionTypeId:
+                    Category: Build
+                    Owner: AWS
+                    Provider: CodeBuild
+                    Version: 1
+                  Configuration:
+                    ProjectName: !Ref CodeBuildProject
+                  InputArtifacts:
+                    - Name: SourceZip
+                  OutputArtifacts:
+                    - Name: BuiltZip
+            - Name: Release
+              Actions:
+                - Name: DeploymentApproval
+                  ActionTypeId:
+                    Category: Approval
+                    Owner: AWS
+                    Provider: Manual
+                    Version: 1
+                  RunOrder: 1
+                - Name: CreateChangeSet
+                  ActionTypeId:
+                    Category: Deploy
+                    Owner: AWS
+                    Provider: CloudFormation
+                    Version: 1
+                  Configuration:
+                    ActionMode: CHANGE_SET_REPLACE
+                    RoleArn: !GetAtt CloudFormationExecutionRole.Arn
+                    StackName: !Sub '${ServiceName}-CICD-RELEASE'
+                    ChangeSetName: !Sub '${ServiceName}-CHANGESET-RELEASE'
+                    TemplatePath: BuiltZip::sam.out.yml
+                    Capabilities: CAPABILITY_IAM
+                  InputArtifacts:
+                    - Name: BuiltZip
+                  RunOrder: 2
+                - Name: ExecuteChangeSet
+                  ActionTypeId:
+                    Category: Deploy
+                    Owner: AWS
+                    Provider: CloudFormation
+                    Version: 1
+                  Configuration:
+                    ActionMode: CHANGE_SET_EXECUTE
+                    RoleArn: !GetAtt CloudFormationExecutionRole.Arn
+                    StackName: !Sub '${ServiceName}-CICD-RELEASE'
+                    ChangeSetName: !Sub '${ServiceName}-CHANGESET-RELEASE'
+                  OutputArtifacts:
+                    - Name: !Sub '${ServiceName}ReleaseChangeSet'
+                  RunOrder: 3
+
+#ROLES and POLICIES 
+  CodeBuildServiceRole:
+      Type: AWS::IAM::Role
+      Properties:
+          AssumeRolePolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Action: 
+                    - 'sts:AssumeRole'
+                  Effect: Allow
+                  Principal:
+                    Service:
+                      - codebuild.amazonaws.com
+          Path: /
+          Policies:
+              - PolicyName: CodeBuildAccess
+                PolicyDocument:
+                  Version: '2012-10-17'
+                  Statement:
+                    - Effect: Allow
+                      Resource:
+                        - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ServiceName}_BUILD'
+                        - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ServiceName}_BUILD:*'
+                      Action:
+                        - 'logs:CreateLogGroup'
+                        - 'logs:CreateLogStream'
+                        - 'logs:PutLogEvents'
+                    - Effect: Allow
+                      Resource:
+                        - !Sub 'arn:aws:s3:::${BucketName}/*'
+                      Action: 
+                        - 's3:GetObject'
+                        - 's3:GetObjectVersion'
+                        - 's3:PutObject'
+
+  # CodePipeline definition and required roles
+  CFNPipelinePolicy:
+      Type: AWS::IAM::ManagedPolicy
+      Properties:
+          Description: CloudFormation Pipeline Execution Policy
+          Path: "/"
+          PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                  Effect: Allow
+                  Action: 
+                      - 'cloudformation:CreateStack'
+                      - 'cloudformation:DescribeStacks'
+                      - 'cloudformation:DeleteStack'
+                      - 'cloudformation:UpdateStack'
+                      - 'cloudformation:CreateChangeSet'
+                      - 'cloudformation:ExecuteChangeSet'
+                      - 'cloudformation:DeleteChangeSet'
+                      - 'cloudformation:DescribeChangeSet'
+                      - 'cloudformation:SetStackPolicy'
+                      - 'cloudformation:SetStackPolicy'
+                      - 'cloudformation:ValidateTemplate'
+                      - 'codebuild:StartBuild'
+                      - 'codebuild:BatchGetBuilds'
+                  Resource: "*"
+
+
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          Action: 
+            - 'sts:AssumeRole'
+          Effect: Allow
+          Principal:
+            Service:
+              - cloudformation.amazonaws.com
+      Path: /
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AdministratorAccess'
+
+  PipelineExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+          AssumeRolePolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Action: 
+                  - 'sts:AssumeRole'
+                  Effect: Allow
+                  Principal:
+                    Service: 
+                      - codepipeline.amazonaws.com
+          Path: /
+          ManagedPolicyArns:
+              - 'arn:aws:iam::aws:policy/AWSCodeCommitFullAccess'
+              - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+              - !Ref CFNPipelinePolicy
+          Policies:
+              - PolicyName: CodePipelineAccess
+                PolicyDocument:
+                  Version: '2012-10-17'
+                  Statement:
+                      - Action:
+                          - 'iam:PassRole'
+                          - 'lambda:InvokeFunction'
+                          - 'lambda:ListFunctions'
+                          - 'lambda:InvokeAsyc'
+                        Effect: Allow
+                        Resource: '*'
+

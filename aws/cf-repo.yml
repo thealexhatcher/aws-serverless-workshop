@@ -1,0 +1,28 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  BucketName:
+    Description: "Bucket Name"
+    Type: String
+  RepoName:
+    Description: "Repo Name"
+    Type: String
+
+Resources:
+  CodeRepository:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref RepoName
+      RepositoryDescription: "Repository for Code"
+
+  BuildArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+
+Outputs: 
+  CodeRepository: 
+    Description: Code Repository
+    Value: !Ref CodeRepository
+  BuildArtifactsBucket:
+    Description: Build Artifacts Bucket
+    Value: !Ref BuildArtifactsBucket

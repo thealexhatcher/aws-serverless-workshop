@@ -1,0 +1,13 @@
+version: 0.1
+environment_variables:
+  plaintext:
+    "S3_BUCKET": "slalom-workshop-bucket"
+phases:
+  pre_build:
+    commands:
+      - aws cloudformation package --template-file sam.yml --s3-bucket $S3_BUCKET --s3-prefix Artifacts --output-template-file sam.out.yml
+artifacts:
+  files:
+    - sam.out.yml
+
+
